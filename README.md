@@ -1,6 +1,6 @@
 # Day 1 — Tetris
 
-A single-file Tetris clone built with pure HTML, CSS, and JavaScript. No libraries, no build tools, no bundler — just open `tetris.html` in a browser.
+A single-file Tetris clone built with pure HTML, CSS, and JavaScript. No libraries, no build tools, no bundler — just open `tetris.html` in a browser and play.
 
 ## How to play
 
