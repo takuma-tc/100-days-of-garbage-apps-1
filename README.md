@@ -1,5 +1,8 @@
 # Day 1 — Tetris
 
+<img width="465" height="575" alt="Screenshot 2026-05-20 at 22 53 29" src="https://github.com/user-attachments/assets/3355d73b-054d-4800-89a1-5292f2b6e8c5" />
+
+
 A single-file Tetris clone built with pure HTML, CSS, and JavaScript. No libraries, no build tools, no bundler — open `tetris.html` in a browser and play.
 
 ## How to play
