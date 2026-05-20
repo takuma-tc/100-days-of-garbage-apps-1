@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tetris</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111118;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: monospace;
+    color: #fff;
+  }
+
+  #game-wrapper {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  #board-container { position: relative; }
+
+  #board {
+    display: block;
+    background: #0a0a0f;
+    border: 1px solid #333;
+    border-radius: 8px;
+  }
+
+  #overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 240px; height: 480px;
+    background: rgba(10,10,15,0.82);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #overlay.hidden { display: none; }
+
+  #overlay-title {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+  }
+
+  #overlay-sub {
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+    letter-spacing: 0.05em;
+    line-height: 1.7;
+  }
+
+  #sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 120px;
+  }
+
+  .panel {
+    background: #1a1a24;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .panel-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .panel-value {
+    font-size: 22px;
+    font-weight: 500;
+    color: #fff;
+  }
+
+  #best-val { color: #ffd600; }
+
+  #next-canvas {
+    display: block;
+    background: #0a0a0f;
+    border-radius: 4px;
+    margin: 6px auto 0;
+  }
+
+  #btn-start {
+    background: #1a1a24;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #fff;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 10px 6px;
+    cursor: pointer;
+    width: 100%;
+    text-align: center;
+    transition: background 0.15s;
+  }
+
+  #btn-start:hover { background: #222230; }
+</style>
+</head>
+<body>
+
+<div id="game-wrapper">
+  <div id="board-container">
+    <canvas id="board" width="240" height="480"></canvas>
+    <div id="overlay">
+      <div id="overlay-title">TETRIS</div>
+      <div id="overlay-sub">スペースキー or ボタンで開始</div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div class="panel">
+      <div class="panel-label">Score</div>
+      <div class="panel-value" id="score-val">0</div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">Best</div>
+      <div class="panel-value" id="best-val">0</div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">Lines</div>
+      <div class="panel-value" id="lines-val">0</div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">Level</div>
+      <div class="panel-value" id="level-val">1</div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">Next</div>
+      <canvas id="next-canvas" width="100" height="100"></canvas>
+    </div>
+    <button id="btn-start">▶ Start / Reset</button>
+  </div>
+</div>
+
+<script>
+const COLS = 10, ROWS = 20, BLOCK = 24;
+const LOCK_DELAY     = 500;  // ms before piece locks on ground
+const MAX_LOCK_RESETS = 15;  // max lock-delay resets per piece
+const FLASH_MS       = 150;  // row flash duration before removal
+const CASCADE_MS     = 300;  // pause after gravity before checking chains
+const MAX_CHAINS     = 3;    // cascade depth cap — preserves board strategy
+
+const PIECES = {
+  I: { shape: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], color: '#00d4ff' },
+  O: { shape: [[1,1],[1,1]],                              color: '#ffd600' },
+  T: { shape: [[0,1,0],[1,1,1],[0,0,0]],                  color: '#c97dff' },
+  S: { shape: [[0,1,1],[1,1,0],[0,0,0]],                  color: '#4cff91' },
+  Z: { shape: [[1,1,0],[0,1,1],[0,0,0]],                  color: '#ff4d4d' },
+  J: { shape: [[1,0,0],[1,1,1],[0,0,0]],                  color: '#4d8bff' },
+  L: { shape: [[0,0,1],[1,1,1],[0,0,0]],                  color: '#ff9933' },
+};
+const TYPES = Object.keys(PIECES);
+const LINE_SCORES = [0, 100, 300, 500, 800];
+
+// SRS wall kick tables — (dx, dy) in y-down canvas coords
+// Derived from Tetris Guideline by negating the y component
+const KICKS_JLSTZ = [
+  [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],   // 0→R
+  [[0,0],[1,0],[1,1],[0,-2],[1,-2]],      // R→2
+  [[0,0],[1,0],[1,-1],[0,2],[1,2]],       // 2→L
+  [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],  // L→0
+];
+const KICKS_I = [
+  [[0,0],[-2,0],[1,0],[-2,1],[1,-2]],    // 0→R
+  [[0,0],[-1,0],[2,0],[-1,-2],[2,1]],    // R→2
+  [[0,0],[2,0],[-1,0],[2,-1],[-1,2]],    // 2→L
+  [[0,0],[1,0],[-2,0],[1,2],[-2,-1]],    // L→0
+];
+
+// DOM
+const boardCanvas = document.getElementById('board');
+const ctx = boardCanvas.getContext('2d');
+const nextCanvas  = document.getElementById('next-canvas');
+const nctx = nextCanvas.getContext('2d');
+const overlay      = document.getElementById('overlay');
+const overlayTitle = document.getElementById('overlay-title');
+const overlaySub   = document.getElementById('overlay-sub');
+const scoreEl = document.getElementById('score-val');
+const bestEl  = document.getElementById('best-val');
+const linesEl = document.getElementById('lines-val');
+const levelEl = document.getElementById('level-val');
+const btnStart = document.getElementById('btn-start');
+
+let highScore = parseInt(localStorage.getItem('tetris_best') || '0');
+bestEl.textContent = highScore;
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function beep(freq, dur, type = 'square', vol = 0.12, offset = 0) {
+  try {
+    const ac = getAudio();
+    const t = ac.currentTime + offset;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.start(t); osc.stop(t + dur + 0.01);
+  } catch (_) {}
+}
+const snd = {
+  move:     () => beep(220, 0.04, 'square', 0.07),
+  rotate:   () => beep(330, 0.04, 'square', 0.07),
+  softDrop: () => beep(180, 0.04, 'square', 0.05),
+  hardDrop: () => { beep(130, 0.07, 'sawtooth', 0.18); beep(85, 0.12, 'sawtooth', 0.12, 0.05); },
+  clear: (n) => {
+    const freqs = n === 4 ? [523,659,784,1047] : [392,494,587];
+    freqs.forEach((f, i) => beep(f, 0.14, 'sine', 0.18, i * 0.06));
+  },
+  chain: (n) => {
+    const base = 440 + n * 130;
+    [base, base * 1.25, base * 1.5].forEach((f, i) => beep(f, 0.10, 'sine', 0.16, i * 0.055));
+  },
+  levelUp:  () => [523,659,784,1047].forEach((f, i) => beep(f, 0.12, 'sine', 0.2, i * 0.07)),
+  gameOver: () => [330,262,196,147].forEach((f, i) => beep(f, 0.28, 'sawtooth', 0.12, i * 0.16)),
+};
+
+// ── Game state ───────────────────────────────────────────────────────────────
+let board, score, lines, level, dropAcc, dropInterval;
+let current, nextType;
+let running  = false;
+let lastTime = 0;
+let rafId    = null;
+let lockAcc = 0, lockResets = 0, onGround = false;
+
+// Phase state machine
+//   'idle'     — game not started
+//   'playing'  — normal gameplay, input active
+//   'flash'    — cleared rows flashing white, input blocked
+//   'cascade'  — column gravity applied, waiting before chain check
+let phase      = 'idle';
+let phaseTimer = 0;
+let flashRows  = [];
+let chainCount = 0;
+let chainMsg   = { text: '', alpha: 0 };
+
+// ── Core logic ───────────────────────────────────────────────────────────────
+function createBoard() {
+  return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+}
+
+function rotate(shape) {
+  const N = shape.length, M = shape[0].length;
+  const out = Array.from({ length: M }, () => Array(N).fill(0));
+  for (let r = 0; r < N; r++)
+    for (let c = 0; c < M; c++)
+      out[c][N - 1 - r] = shape[r][c];
+  return out;
+}
+
+function valid(shape, ox, oy) {
+  for (let r = 0; r < shape.length; r++)
+    for (let c = 0; c < shape[r].length; c++)
+      if (shape[r][c]) {
+        const x = ox + c, y = oy + r;
+        if (x < 0 || x >= COLS || y >= ROWS) return false;
+        if (y >= 0 && board[y][x]) return false;
+      }
+  return true;
+}
+
+function ghostY() {
+  let gy = current.y;
+  while (valid(current.shape, current.x, gy + 1)) gy++;
+  return gy;
+}
+
+function tryRotate() {
+  const newShape = rotate(current.shape);
+  const from = current.rot;
+  const kicks = current.type === 'I' ? KICKS_I[from] :
+                current.type === 'O' ? [[0, 0]] :
+                KICKS_JLSTZ[from];
+  for (const [dx, dy] of kicks) {
+    if (valid(newShape, current.x + dx, current.y + dy)) {
+      current.shape = newShape;
+      current.x += dx; current.y += dy;
+      current.rot = (from + 1) % 4;
+      resetLock();
+      return true;
+    }
+  }
+  return false;
+}
+
+function resetLock() {
+  if (onGround && lockResets < MAX_LOCK_RESETS) {
+    lockAcc = 0;
+    lockResets++;
+  }
+}
+
+function findCompleteLines() {
+  const rows = [];
+  for (let r = 0; r < ROWS; r++)
+    if (board[r].every(c => c !== 0)) rows.push(r);
+  return rows;
+}
+
+// Column-independent gravity: each column's blocks fall to the bottom.
+// Applied after row removal to create the cascade effect.
+function applyCascadeGravity() {
+  for (let c = 0; c < COLS; c++) {
+    const cells = [];
+    for (let r = 0; r < ROWS; r++)
+      if (board[r][c]) cells.push(board[r][c]);
+    for (let r = ROWS - 1; r >= 0; r--)
+      board[r][c] = cells.length > 0 ? cells.pop() : 0;
+  }
+}
+
+function applyScore(n, chain) {
+  // chain 0→×1.0, 1→×1.5, 2→×2.0, 3→×2.5
+  const mult = 1 + chain * 0.5;
+  const prevLevel = level;
+  score += Math.round(LINE_SCORES[n] * level * mult);
+  lines += n;
+  level = Math.floor(lines / 10) + 1;
+  dropInterval = Math.max(100, 800 - (level - 1) * 70);
+  if (level > prevLevel) snd.levelUp();
+  updateUI();
+}
+
+function enterFlash(rows, chain) {
+  flashRows  = rows;
+  chainCount = chain;
+  applyScore(rows.length, chain);
+  phaseTimer = 0;
+  phase      = 'flash';
+  snd.clear(rows.length);
+  if (chain >= 1) snd.chain(chain);
+  chainMsg.text  = chain >= 2 ? `×${chain} CHAIN!` : chain === 1 ? 'CHAIN!' : '';
+  chainMsg.alpha = chain >= 1 ? 1 : 0;
+}
+
+function place() {
+  const { shape, color, x, y } = current;
+  for (let r = 0; r < shape.length; r++)
+    for (let c = 0; c < shape[r].length; c++)
+      if (shape[r][c] && y + r >= 0)
+        board[y + r][x + c] = color;
+  current = null; // piece is locked; cleared in cascade
+  dropAcc = 0;
+
+  const rows = findCompleteLines();
+  if (rows.length > 0) {
+    enterFlash(rows, 0);
+  } else {
+    spawnPiece();
+  }
+}
+
+function spawnPiece() {
+  const type = nextType;
+  nextType = TYPES[Math.floor(Math.random() * TYPES.length)];
+  const piece = PIECES[type];
+  current = {
+    type,
+    shape: piece.shape.map(r => [...r]),
+    color: piece.color,
+    x: Math.floor((COLS - piece.shape[0].length) / 2),
+    y: 0,
+    rot: 0,
+  };
+  lockAcc = 0; lockResets = 0; onGround = false;
+  if (!valid(current.shape, current.x, current.y)) {
+    endGame(); return;
+  }
+  drawNext();
+}
+
+function updateUI() {
+  scoreEl.textContent = score;
+  linesEl.textContent = lines;
+  levelEl.textContent = level;
+  if (score > highScore) {
+    highScore = score;
+    localStorage.setItem('tetris_best', highScore);
+    bestEl.textContent = highScore;
+  }
+}
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+function drawBlock(context, x, y, color, size) {
+  context.fillStyle = color;
+  context.fillRect(x + 1, y + 1, size - 2, size - 2);
+  context.fillStyle = 'rgba(255,255,255,0.15)';
+  context.fillRect(x + 1, y + 1, size - 2, 4);
+}
+
+function drawBoardBase() {
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, COLS * BLOCK, ROWS * BLOCK);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 0.5;
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath(); ctx.moveTo(c * BLOCK, 0); ctx.lineTo(c * BLOCK, ROWS * BLOCK); ctx.stroke();
+  }
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath(); ctx.moveTo(0, r * BLOCK); ctx.lineTo(COLS * BLOCK, r * BLOCK); ctx.stroke();
+  }
+
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c]) drawBlock(ctx, c * BLOCK, r * BLOCK, board[r][c], BLOCK);
+}
+
+function drawChainMsg() {
+  if (chainMsg.alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = chainMsg.alpha;
+  ctx.font = 'bold 26px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#ff6600';
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = '#ffd600';
+  ctx.fillText(chainMsg.text, COLS * BLOCK / 2, ROWS * BLOCK / 2 - 10);
+  ctx.restore();
+}
+
+function drawBoard() {
+  drawBoardBase();
+
+  if (current && phase === 'playing') {
+    // Ghost
+    const gy = ghostY();
+    ctx.globalAlpha = 0.18;
+    for (let r = 0; r < current.shape.length; r++)
+      for (let c = 0; c < current.shape[r].length; c++)
+        if (current.shape[r][c])
+          drawBlock(ctx, (current.x + c) * BLOCK, (gy + r) * BLOCK, current.color, BLOCK);
+
+    // Current piece — pulse when lock delay is ticking
+    ctx.globalAlpha = onGround ? 0.6 + 0.4 * Math.abs(Math.sin(lockAcc / 75)) : 1.0;
+    for (let r = 0; r < current.shape.length; r++)
+      for (let c = 0; c < current.shape[r].length; c++)
+        if (current.shape[r][c])
+          drawBlock(ctx, (current.x + c) * BLOCK, (current.y + r) * BLOCK, current.color, BLOCK);
+    ctx.globalAlpha = 1.0;
+
+    // Lock delay progress bar
+    if (onGround && lockAcc > 0) {
+      let minX = COLS, maxX = 0, maxRow = 0;
+      for (let r = 0; r < current.shape.length; r++)
+        for (let c = 0; c < current.shape[r].length; c++)
+          if (current.shape[r][c]) {
+            minX = Math.min(minX, current.x + c);
+            maxX = Math.max(maxX, current.x + c + 1);
+            maxRow = Math.max(maxRow, current.y + r + 1);
+          }
+      const bw = (maxX - minX) * BLOCK;
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillRect(minX * BLOCK + 1, maxRow * BLOCK - 2, Math.max(0, bw * (lockAcc / LOCK_DELAY) - 2), 2);
+    }
+  }
+
+  drawChainMsg();
+}
+
+// Flash phase draw: board + white overlay on cleared rows
+function drawBoardFlash(frac) {
+  drawBoardBase();
+  const alpha = 0.85 * Math.cos((frac * Math.PI) / 2); // starts bright, fades
+  ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+  for (const r of flashRows) ctx.fillRect(0, r * BLOCK, COLS * BLOCK, BLOCK);
+  drawChainMsg();
+}
+
+function drawNext() {
+  const NB = 20;
+  nctx.fillStyle = '#0a0a0f';
+  nctx.fillRect(0, 0, 100, 100);
+  const piece = PIECES[nextType];
+  const sh = piece.shape;
+  const ox = Math.floor((5 - sh[0].length) / 2) * NB;
+  const oy = Math.floor((5 - sh.length) / 2) * NB;
+  for (let r = 0; r < sh.length; r++)
+    for (let c = 0; c < sh[r].length; c++)
+      if (sh[r][c]) drawBlock(nctx, ox + c * NB, oy + r * NB, piece.color, NB);
+}
+
+// ── Game loop ────────────────────────────────────────────────────────────────
+function loop(timestamp) {
+  if (!running) return;
+  const dt = Math.min(timestamp - lastTime, 50);
+  lastTime = timestamp;
+
+  if (chainMsg.alpha > 0) chainMsg.alpha = Math.max(0, chainMsg.alpha - dt / 800);
+
+  // ── playing ──
+  if (phase === 'playing') {
+    const canFall = valid(current.shape, current.x, current.y + 1);
+    if (canFall) {
+      onGround = false;
+      lockAcc = 0;
+      dropAcc += dt;
+      if (dropAcc >= dropInterval) {
+        dropAcc -= dropInterval;
+        current.y++;
+      }
+    } else {
+      onGround = true;
+      dropAcc = 0;
+      lockAcc += dt;
+      if (lockAcc >= LOCK_DELAY) {
+        lockAcc = 0;
+        place(); // may change phase to 'flash'
+      }
+    }
+    if (phase === 'playing') drawBoard();
+  }
+
+  // ── flash ──
+  if (phase === 'flash') {
+    phaseTimer += dt;
+    drawBoardFlash(Math.min(phaseTimer / FLASH_MS, 1));
+    if (phaseTimer >= FLASH_MS) {
+      // Zero out cleared rows, then apply column gravity
+      for (const r of flashRows) board[r] = Array(COLS).fill(0);
+      applyCascadeGravity();
+      phaseTimer = 0;
+      phase = 'cascade';
+    }
+  }
+
+  // ── cascade ──
+  if (phase === 'cascade') {
+    phaseTimer += dt;
+    drawBoard();
+    if (phaseTimer >= CASCADE_MS) {
+      const newRows = findCompleteLines();
+      if (newRows.length > 0 && chainCount < MAX_CHAINS) {
+        // Chain! — re-enter flash with incremented chain count
+        enterFlash(newRows, chainCount + 1);
+      } else {
+        phase = 'playing';
+        spawnPiece();
+      }
+    }
+  }
+
+  rafId = requestAnimationFrame(loop);
+}
+
+function startGame() {
+  getAudio();
+  if (rafId) cancelAnimationFrame(rafId);
+  board = createBoard();
+  score = 0; lines = 0; level = 1; dropAcc = 0; dropInterval = 800;
+  lockAcc = 0; lockResets = 0; onGround = false;
+  phase = 'playing'; phaseTimer = 0;
+  flashRows = []; chainCount = 0;
+  chainMsg = { text: '', alpha: 0 };
+  nextType = TYPES[Math.floor(Math.random() * TYPES.length)];
+  updateUI();
+  spawnPiece();
+  overlay.classList.add('hidden');
+  running = true;
+  lastTime = performance.now();
+  rafId = requestAnimationFrame(loop);
+}
+
+function endGame() {
+  running = false;
+  phase = 'idle';
+  snd.gameOver();
+  if (score > highScore) {
+    highScore = score;
+    localStorage.setItem('tetris_best', highScore);
+    bestEl.textContent = highScore;
+  }
+  overlayTitle.textContent = 'GAME OVER';
+  overlaySub.innerHTML =
+    `Score: ${score}<br>` +
+    `<span style="font-size:11px;color:#ffd600">Best: ${highScore}</span><br><br>` +
+    `スペースキー or ボタンで再開`;
+  overlay.classList.remove('hidden');
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (!running) {
+    if (e.code === 'Space') { e.preventDefault(); startGame(); }
+    return;
+  }
+  if (phase !== 'playing') return; // block input during flash / cascade
+
+  switch (e.code) {
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (valid(current.shape, current.x - 1, current.y)) {
+        current.x--; snd.move(); resetLock();
+      }
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (valid(current.shape, current.x + 1, current.y)) {
+        current.x++; snd.move(); resetLock();
+      }
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (valid(current.shape, current.x, current.y + 1)) {
+        current.y++; score += 1; scoreEl.textContent = score; snd.softDrop();
+      }
+      dropAcc = 0;
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (tryRotate()) snd.rotate();
+      break;
+    case 'Space': {
+      e.preventDefault();
+      const gy = ghostY();
+      score += (gy - current.y) * 2;
+      scoreEl.textContent = score;
+      current.y = gy;
+      snd.hardDrop();
+      place();
+      break;
+    }
+  }
+});
+
+btnStart.addEventListener('click', startGame);
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+board = createBoard();
+nextType = TYPES[Math.floor(Math.random() * TYPES.length)];
+drawNext();
+drawBoard();
+</script>
+</body>
+</html>
